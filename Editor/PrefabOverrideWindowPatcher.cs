@@ -45,8 +45,6 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
         private static readonly MethodInfo s_PrefabUtilityGetRootGameObjectMethod;
         private static readonly MethodInfo s_PrefabUtilityIsPartOfPrefabThatCanBeAppliedToMethod;
         private static readonly MethodInfo s_PrefabUtilityHasApplicableObjectOverridesForTargetMethod;
-        private static readonly MethodInfo s_PrefabUtilityProcessMultipleOverridesMethod;
-        private static readonly object s_OverrideOperationApplyValue;
 
         // EditorUtility
         private static readonly MethodInfo s_EditorUtilityForceRebuildInspectorsMethod;
@@ -110,9 +108,6 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
             s_PrefabUtilityGetRootGameObjectMethod = AccessTools.Method(typeof(PrefabUtility), "GetRootGameObject", new[] { typeof(UnityEngine.Object) }) ?? throw new Exception("Failed to get GetRootGameObject method");
             s_PrefabUtilityIsPartOfPrefabThatCanBeAppliedToMethod = AccessTools.Method(typeof(PrefabUtility), "IsPartOfPrefabThatCanBeAppliedTo") ?? throw new Exception("Failed to get IsPartOfPrefabThatCanBeAppliedTo method");
             s_PrefabUtilityHasApplicableObjectOverridesForTargetMethod = AccessTools.Method(typeof(PrefabUtility), "HasApplicableObjectOverridesForTarget") ?? throw new Exception("Failed to get HasApplicableObjectOverridesForTarget method");
-            s_PrefabUtilityProcessMultipleOverridesMethod = AccessTools.Method(typeof(PrefabUtility), "ProcessMultipleOverrides") ?? throw new Exception("Failed to get ProcessMultipleOverrides method");
-            var overrideOperationType = AccessTools.TypeByName("UnityEditor.PrefabUtility+OverrideOperation") ?? throw new Exception("Failed to get OverrideOperation type");
-            s_OverrideOperationApplyValue = Enum.Parse(overrideOperationType, "Apply");
 
             s_EditorUtilityForceRebuildInspectorsMethod = AccessTools.Method(typeof(EditorUtility), "ForceRebuildInspectors") ?? throw new Exception("Failed to get ForceRebuildInspectors method");
 
@@ -193,7 +188,6 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
 
         private static void RefreshStatusPostfix()
         {
-            InitializeState();
             if (s_TreeViewInstance is null) return;
             var currentSelection = s_TreeViewInstance.GetSelection();
             OnSelectionChanged(currentSelection);
@@ -202,6 +196,11 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
         private static void OnSelectionChanged(IList<int> selectedIds)
         {
             if (s_TreeViewInstance is null) return;
+
+            s_ApplyMode = SelectionMode.None;
+            s_CurrentOverrides.Clear();
+            s_CurrentTargets.Clear();
+
             var rows = s_TreeViewInstance.GetRows();
             if (rows.Count == 0) return;
 
@@ -247,8 +246,6 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
             }
 
             var overrides = s_CurrentOverrides;
-
-            s_CurrentTargets.Clear();
             if (overrides.Count == 0) return;
 
             var overrideInfos = new OverrideApplyInfo[overrides.Count];
@@ -273,16 +270,19 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
                 if (commonRootsSet.Count == 0) return;
             }
 
-            var firstTargets = overrideInfos[0].targets;
-            for (int i = 0; i < firstTargets.Count; i++)
-            {
-                var (sourceObject, root) = firstTargets[i];
-                if (!commonRootsSet.Contains(root)) continue;
+            var commonTargets = overrideInfos[0].targets
+                .Where(target => commonRootsSet.Contains(target.root))
+                .GroupBy(target => target.root)
+                .Select(group => group.First())
+                .ToList();
 
+            for (int i = 0; i < commonTargets.Count; i++)
+            {
+                var root = commonTargets[i].root;
                 var canApply = CanApply(root, overrideInfos);
 
-                string format = i == firstTargets.Count - 1 
-                    ? "Apply to Prefab '{0}'" 
+                string format = i == commonTargets.Count - 1
+                    ? "Apply to Prefab '{0}'"
                     : "Apply as Override in Prefab '{0}'";
                 var content = new GUIContent(string.Format(format, root.name));
 
@@ -449,10 +449,11 @@ namespace Aoyon.AoyonPatcher.PrefabOverridesWindow
                 return;
             }
 
-            var result = (bool)s_PrefabUtilityProcessMultipleOverridesMethod.Invoke(null, new object[] { target.RootGameObject, s_CurrentOverrides, s_OverrideOperationApplyValue, InteractionMode.UserAction });
+            var result = PrefabOverrideApplyPatcher.ApplyToTarget(target.RootGameObject, s_CurrentOverrides);
+
             if (result)
             {
-                s_EditorUtilityForceRebuildInspectorsMethod.Invoke(null, null);   
+                s_EditorUtilityForceRebuildInspectorsMethod.Invoke(null, null);
             }
 
             if (s_WindowInstance != null)
